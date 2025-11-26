@@ -201,7 +201,7 @@ require("lazy").setup({
     'folke/drop.nvim',
     -- Load on demand (no automatic show at startup)
     opts = {
-      theme = "matrix",
+      theme = "stars",
       max = 75,
       interval = 100,
       screensaver = 1000 * 60 * 5,
