@@ -46,6 +46,12 @@ local function get_type_size(vtype)
   else return 8 end -- Default to qword/pointer size
 end
 
+-- Format bytes
+local function format_bytes(bytes)
+  if bytes >= 1024 then return string.format("%.1fK", bytes / 1024)
+  else return tostring(bytes) .. "B" end
+end
+
 -- Parse assembly file for stack information
 local function parse_assembly(lines)
   local functions = {}
@@ -66,6 +72,9 @@ local function parse_assembly(lines)
         start_line = i,
         has_calls = false,
         errors = {},
+        register_map = {}, -- Track which registers point to stack
+        access_order = {}, -- Track access order for pattern analysis
+        hints = {}, -- Optimization hints
       }
       functions[func_name] = current_func
     end
@@ -90,12 +99,19 @@ local function parse_assembly(lines)
         current_func.has_calls = true
       end
       
+      -- Track LEA instructions (register pointing to stack)
+      local lea_reg, lea_offset = trimmed:match("lea%s+(%w+),%s*%[rbp%-(%d+)%]")
+      if lea_reg and lea_offset then
+        current_func.register_map[lea_reg] = tonumber(lea_offset)
+      end
+      
       -- Find ALL rbp-relative accesses in the line
       for offset in trimmed:gmatch("%[rbp%-(%d+)%]") do
         local off_num = tonumber(offset)
         
         if not line_map[i] then line_map[i] = {} end
         table.insert(line_map[i], off_num)
+        table.insert(current_func.access_order, off_num)
         
         -- Check for out-of-bounds access
         if current_func.stack_size > 0 and off_num > current_func.stack_size then
@@ -124,10 +140,12 @@ local function parse_assembly(lines)
             def_line = i,
             reads = {},
             writes = {},
+            access_count = 0,
           }
         end
         
         local var = current_func.variables[off_num]
+        var.access_count = var.access_count + 1
         
         -- Track reads vs writes
         if trimmed:match("mov%s+[^,]+,%s*%[rbp%-" .. off_num .. "%]") or
@@ -159,7 +177,7 @@ local function parse_assembly(lines)
     end
   end
   
-  -- Post-process: Check for uninitialized reads
+  -- Post-process: Check for uninitialized reads and generate hints
   for fname, func in pairs(functions) do
     for offset, var in pairs(func.variables) do
       if #var.reads > 0 and #var.writes == 0 then
@@ -170,6 +188,41 @@ local function parse_assembly(lines)
           message = string.format("[rbp-%d] read before write", offset)
         })
       end
+      
+      -- Hint: Single-use variables
+      if var.access_count == 1 then
+        table.insert(func.hints, {
+          type = "single_use",
+          offset = offset,
+          message = string.format("[rbp-%d] used only once - consider using register", offset)
+        })
+      end
+    end
+    
+    -- Analyze access patterns
+    if #func.access_order > 3 then
+      local is_sequential = true
+      for i = 2, #func.access_order do
+        if math.abs(func.access_order[i] - func.access_order[i-1]) > 64 then
+          is_sequential = false
+          break
+        end
+      end
+      
+      if not is_sequential then
+        table.insert(func.hints, {
+          type = "random_access",
+          message = "Random stack access pattern - may cause cache misses"
+        })
+      end
+    end
+    
+    -- Hint: Large stack allocation
+    if func.stack_size > 4096 then
+      table.insert(func.hints, {
+        type = "large_stack",
+        message = string.format("Large stack (%s) - consider heap allocation", format_bytes(func.stack_size))
+      })
     end
   end
   
@@ -256,11 +309,7 @@ local function get_color(item, is_active)
   else return "Comment" end
 end
 
--- Format bytes
-local function format_bytes(bytes)
-  if bytes >= 1024 then return string.format("%.1fK", bytes / 1024)
-  else return tostring(bytes) .. "B" end
-end
+
 
 -- Calculate cell height
 local function calc_height(size, max_size, num_info_lines)
@@ -391,6 +440,18 @@ local function generate_lines(functions, width, active_offsets)
         table.insert(lines, reg_info)
         table.insert(highlights, {line = #lines, col = 0, hl = "Special"})
       end
+    end
+    
+    -- Register Tracking
+    if vim.tbl_count(func.register_map) > 0 then
+      local reg_parts = {}
+      for reg, offset in pairs(func.register_map) do
+        table.insert(reg_parts, string.format("%s→%d", reg, offset))
+      end
+      local reg_line = " Regs: " .. table.concat(reg_parts, ", ")
+      if #reg_line > w then reg_line = reg_line:sub(1, w - 3) .. "..." end
+      table.insert(lines, reg_line)
+      table.insert(highlights, {line = #lines, col = 0, hl = "Special"})
     end
     
     -- RBP Marker
