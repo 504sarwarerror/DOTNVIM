@@ -917,3 +917,17 @@ end, {})
 
 vim.keymap.set('n', '<leader>sv', ':StackViz<CR>', { noremap = true, silent = true, desc = 'Show Stack Visualization' })
 
+
+-- Auto-start Stack Visualizer for assembly files
+vim.api.nvim_create_autocmd({"BufEnter", "BufWinEnter"}, {
+  pattern = { "*.asm", "*.s" },
+  callback = function()
+    vim.defer_fn(function()
+      local ok, sv = pcall(require, 'stack_visualizer')
+      if ok then
+        sv.show()
+        sv.start_auto_reload()
+      end
+    end, 200)
+  end,
+})
