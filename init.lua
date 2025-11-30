@@ -122,10 +122,13 @@ require("lazy").setup({
   
   { 'nvim-lua/plenary.nvim' },
   { 'MunifTanjim/nui.nvim' },
-  { 'zbirenbaum/copilot.lua' },
-  { 'github/copilot.vim' },
-  { 'zbirenbaum/copilot-cmp' },
-
+  {
+    'github/copilot.vim',
+    config = function()
+      vim.g.copilot_no_tab_map = true
+      vim.api.nvim_set_keymap('i', '<C-J>', 'copilot#Accept("\\<CR>")', { expr = true, replace_keycodes = false, noremap = true })
+    end,
+  },
   
   { 'nvim-lualine/lualine.nvim' },
   
@@ -200,7 +203,7 @@ require("lazy").setup({
     'folke/drop.nvim',
     
     opts = {
-      theme = "matrix",
+      theme = "stars",
       max = 75,
       interval = 100,
       screensaver = 1000 * 60 * 5,
@@ -654,19 +657,10 @@ if ok_alpha then
   alpha.setup(dashboard.opts)
 end
 
-
-
-
-
 local ok_todo, todo = pcall(require, "todo-comments")
 if ok_todo then
   todo.setup()
 end
-
-
-
-
-
 
 local ok_modes, modes = pcall(require, "modes")
 if ok_modes then
@@ -689,64 +683,12 @@ end
 vim.g.Illuminate_delay = 100
 vim.g.Illuminate_highlightUnderCursor = 1
 
-
-
-
-
-
-
-
 local ok_hop, hop = pcall(require, "hop")
 if ok_hop then
   hop.setup({ keys = 'etovxqpdygfblzhckisuran' })
 end
 
-
-
-
-
-
 vim.g['sneak#label'] = 1  
-
-
-
-
-
-local ok_copilot, copilot = pcall(require, "copilot")
-if ok_copilot then
-  
-  vim.g.copilot_no_tab_map = true
-
-  copilot.setup({
-    suggestion = {
-      enabled = true,
-      auto_trigger = true,
-      keymap = {
-        accept = "<C-CR>",       
-        accept_word = "<C-w>",
-        accept_line = "<C-l>",
-        next = "<C-]>",
-        prev = "<C-[>",
-        dismiss = "<C-/>",
-      },
-    },
-    panel = {
-      enabled = true,
-      auto_refresh = true,
-      keymap = {
-        open = "<C-p>",
-        accept = "<M-CR>",
-        refresh = "gr",
-        discard = "<C-x>",
-      },
-    },
-  })
-end
-
-local ok_copilot_cmp, copilot_cmp = pcall(require, "copilot_cmp")
-if ok_copilot_cmp then
-  copilot_cmp.setup()
-end
 
 local ok_cmp, cmp = pcall(require, "cmp")
 if ok_cmp then
@@ -761,7 +703,12 @@ if ok_cmp then
       ['<C-f>'] = cmp.mapping.scroll_docs(4),
       ['<C-Space>'] = cmp.mapping.complete(),
       ['<C-e>'] = cmp.mapping.abort(),
-      ['<CR>'] = cmp.mapping.confirm({ select = true }), 
+      ['<CR>'] = cmp.mapping(function(fallback)
+        if cmp.visible() then
+          return cmp.confirm({ select = true })
+        end
+        return fallback()
+      end, { 'i', 's' }),
       ['<Tab>'] = cmp.mapping(function(fallback)
         if cmp.visible() then
           cmp.select_next_item()
@@ -778,7 +725,6 @@ if ok_cmp then
       end, { 'i', 's' }),
     }),
     sources = cmp.config.sources({
-      { name = 'copilot' },
       { name = 'nvim_lsp' },
       { name = 'luasnip' },
     }, {
@@ -787,16 +733,6 @@ if ok_cmp then
     })
   })
 end
-
-
-pcall(function()
-  local ok_preview, _ = pcall(require, "copilot_preview")
-  if ok_preview then
-    vim.keymap.set('i', '<C-j>', function() require('copilot_preview').accept_and_preview() end, { noremap = true, silent = true, desc = "Copilot accept+preview" })
-    vim.keymap.set('n', '<leader>pa', function() require('copilot_preview').apply_accept() end, { noremap = true, silent = true, desc = "Accept AI preview" })
-    vim.keymap.set('n', '<leader>pr', function() require('copilot_preview').revert_to_tmp() end, { noremap = true, silent = true, desc = "Reject AI preview" })
-  end
-end)
 
 
 vim.g.UltiSnipsExpandTrigger = '<c-j>'
@@ -975,6 +911,9 @@ vim.keymap.set('n', '<C-S-z>', '<C-r>', { noremap = true, silent = true, desc = 
 vim.keymap.set('i', '<C-S-z>', '<C-o><C-r>', { noremap = true, silent = true, desc = "Redo" })
 
 
+vim.api.nvim_create_user_command('StackViz', function()
+  require('stack_visualizer').show()
+end, {})
 
-
+vim.keymap.set('n', '<leader>sv', ':StackViz<CR>', { noremap = true, silent = true, desc = 'Show Stack Visualization' })
 
