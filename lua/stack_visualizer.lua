@@ -73,6 +73,7 @@ local function parse_assembly(lines)
         has_calls = false,
         errors = {},
         register_map = {}, -- Track which registers point to stack
+        register_usage = {}, -- Track all register operations
         access_order = {}, -- Track access order for pattern analysis
         hints = {}, -- Optimization hints
       }
@@ -99,10 +100,70 @@ local function parse_assembly(lines)
         current_func.has_calls = true
       end
       
-      -- Track LEA instructions (register pointing to stack)
+      -- Track ALL register operations
+      -- MOV operations
+      local mov_dest, mov_src = trimmed:match("mov%s+(%w+),%s*(.+)")
+      if mov_dest and mov_src then
+        if not current_func.register_usage[mov_dest] then
+          current_func.register_usage[mov_dest] = {operations = {}, values = {}}
+        end
+        table.insert(current_func.register_usage[mov_dest].operations, {
+          type = "mov",
+          line = i,
+          source = mov_src
+        })
+        
+        -- Track if loading from stack
+        local stack_offset = mov_src:match("%[rbp%-(%d+)%]")
+        if stack_offset then
+          table.insert(current_func.register_usage[mov_dest].values, 
+            string.format("stack[rbp-%s]", stack_offset))
+        elseif mov_src:match("^%d+$") then
+          table.insert(current_func.register_usage[mov_dest].values, mov_src)
+        elseif mov_src:match("^[%w_]+$") and not mov_src:match("^[re]") then
+          table.insert(current_func.register_usage[mov_dest].values, mov_src)
+        end
+      end
+      
+      -- LEA operations (register pointing to stack)
       local lea_reg, lea_offset = trimmed:match("lea%s+(%w+),%s*%[rbp%-(%d+)%]")
       if lea_reg and lea_offset then
         current_func.register_map[lea_reg] = tonumber(lea_offset)
+        if not current_func.register_usage[lea_reg] then
+          current_func.register_usage[lea_reg] = {operations = {}, values = {}}
+        end
+        table.insert(current_func.register_usage[lea_reg].operations, {
+          type = "lea",
+          line = i,
+          target = string.format("[rbp-%s]", lea_offset)
+        })
+        table.insert(current_func.register_usage[lea_reg].values, 
+          string.format("&[rbp-%s]", lea_offset))
+      end
+      
+      -- ADD/SUB operations
+      local add_dest, add_src = trimmed:match("add%s+(%w+),%s*(.+)")
+      if add_dest and add_src then
+        if not current_func.register_usage[add_dest] then
+          current_func.register_usage[add_dest] = {operations = {}, values = {}}
+        end
+        table.insert(current_func.register_usage[add_dest].operations, {
+          type = "add",
+          line = i,
+          operand = add_src
+        })
+      end
+      
+      local sub_dest, sub_src = trimmed:match("sub%s+(%w+),%s*(.+)")
+      if sub_dest and sub_src and sub_dest ~= "rsp" then -- Ignore stack allocation
+        if not current_func.register_usage[sub_dest] then
+          current_func.register_usage[sub_dest] = {operations = {}, values = {}}
+        end
+        table.insert(current_func.register_usage[sub_dest].operations, {
+          type = "sub",
+          line = i,
+          operand = sub_src
+        })
       end
       
       -- Find ALL rbp-relative accesses in the line
@@ -442,16 +503,43 @@ local function generate_lines(functions, width, active_offsets)
       end
     end
     
-    -- Register Tracking
-    if vim.tbl_count(func.register_map) > 0 then
-      local reg_parts = {}
-      for reg, offset in pairs(func.register_map) do
-        table.insert(reg_parts, string.format("%s→%d", reg, offset))
+    -- Comprehensive Register Usage Panel
+    if vim.tbl_count(func.register_usage) > 0 then
+      -- Filter out unknown values
+      local known_regs = {}
+      for reg, usage in pairs(func.register_usage) do
+        local last_val = usage.values[#usage.values]
+        if last_val and last_val ~= "unknown" then
+          table.insert(known_regs, {reg = reg, value = last_val})
+        end
       end
-      local reg_line = " Regs: " .. table.concat(reg_parts, ", ")
-      if #reg_line > w then reg_line = reg_line:sub(1, w - 3) .. "..." end
-      table.insert(lines, reg_line)
-      table.insert(highlights, {line = #lines, col = 0, hl = "Special"})
+      
+      if #known_regs > 0 then
+        -- Sort registers for consistent display
+        table.sort(known_regs, function(a, b) return a.reg < b.reg end)
+        
+        for _, item in ipairs(known_regs) do
+          local reg = item.reg
+          local last_val = item.value
+          
+          -- Format register line showing current value
+          local reg_line
+          if last_val:match("^&%[rbp") then
+            -- Pointer to stack
+            reg_line = string.format(" %s = %s", reg, last_val)
+          elseif last_val:match("^stack%[rbp") then
+            -- Loaded from stack
+            reg_line = string.format(" %s = %s", reg, last_val:gsub("stack", ""))
+          else
+            -- Constant or other value
+            reg_line = string.format(" %s = %s", reg, last_val)
+          end
+          
+          if #reg_line > w then reg_line = reg_line:sub(1, w - 3) .. "..." end
+          table.insert(lines, reg_line)
+          table.insert(highlights, {line = #lines, col = 0, hl = "Special"})
+        end
+      end
     end
     
     -- RBP Marker
@@ -585,6 +673,31 @@ function M.refresh()
   vim.api.nvim_buf_clear_namespace(stack_buf, ns_id, 0, -1)
   for _, hl in ipairs(highlights) do
     vim.api.nvim_buf_add_highlight(stack_buf, ns_id, hl.hl, hl.line - 1, 0, -1)
+  end
+  
+  -- Auto-scroll to active variable in the visualizer window
+  if active_offsets and #active_offsets > 0 and stack_win and vim.api.nvim_win_is_valid(stack_win) then
+    -- Find the first line that corresponds to an active offset
+    for line_num, target_line in pairs(jump_map) do
+      if target_line then
+        -- Get the line content to check if it's an active variable
+        local line_content = viz_lines[line_num]
+        if line_content then
+          for _, active_off in ipairs(active_offsets) do
+            local pattern = "%[rbp%-" .. active_off .. "%]"
+            if line_content:match(pattern) then
+              -- Found the active variable line, center it in the visualizer window
+              local current_win = vim.api.nvim_get_current_win()
+              vim.api.nvim_set_current_win(stack_win)
+              vim.api.nvim_win_set_cursor(stack_win, {line_num, 0})
+              vim.cmd('normal! zz') -- Center the line in the window
+              vim.api.nvim_set_current_win(current_win) -- Return to original window
+              return
+            end
+          end
+        end
+      end
+    end
   end
 end
 
