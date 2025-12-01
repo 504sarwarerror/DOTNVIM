@@ -540,9 +540,103 @@ local function generate_lines(functions, width, active_offsets, cursor_line)
     local header = string.format(" %s • %s (%.0f%%) ", fname, format_bytes(func.stack_size), efficiency)
     local pad = math.floor((w - #header) / 2)
     
+    -- Enhanced Cursor-Aware Register Tracking Panel (topmost)
+    if vim.tbl_count(func.register_usage) > 0 and cursor_line then
+      local current_regs = {}
+      for reg, usage in pairs(func.register_usage) do
+        local current_op = nil
+        for _, op in ipairs(usage.operations) do
+          if op.line <= cursor_line then
+            if not current_op or op.line > current_op.line then
+              current_op = op
+            end
+          end
+        end
+        if current_op then current_regs[reg] = current_op end
+      end
+
+      local final_regs = {}
+      for reg, usage in pairs(func.register_usage) do
+        if usage.latest then final_regs[reg] = usage.latest end
+      end
+
+      local reg_states = {}
+      local all_regs = {}
+      for reg, _ in pairs(current_regs) do all_regs[reg] = true end
+      for reg, _ in pairs(final_regs) do all_regs[reg] = true end
+
+      for reg, _ in pairs(all_regs) do
+        local current_info = current_regs[reg]
+        local final_info = final_regs[reg]
+        local state = { reg = reg, current = current_info, final = final_info, changed = false }
+        if current_info and final_info then
+          if current_info.line ~= final_info.line or current_info.display ~= final_info.display then state.changed = true end
+        elseif not current_info and final_info then
+          state.changed = true
+        elseif current_info and not final_info then
+          state.changed = true
+        end
+        table.insert(reg_states, state)
+      end
+
+      local filtered_states = {}
+      local skip_subregs = {}
+      for _, state in ipairs(reg_states) do
+        local reg = state.reg
+        if reg == "rax" then skip_subregs["eax"] = true; skip_subregs["ax"] = true; skip_subregs["al"] = true
+        elseif reg == "rbx" then skip_subregs["ebx"] = true; skip_subregs["bx"] = true; skip_subregs["bl"] = true
+        elseif reg == "rcx" then skip_subregs["ecx"] = true; skip_subregs["cx"] = true; skip_subregs["cl"] = true
+        elseif reg == "rdx" then skip_subregs["edx"] = true; skip_subregs["dx"] = true; skip_subregs["dl"] = true
+        elseif reg == "rsi" then skip_subregs["esi"] = true; skip_subregs["si"] = true; skip_subregs["sil"] = true
+        elseif reg == "rdi" then skip_subregs["edi"] = true; skip_subregs["di"] = true; skip_subregs["dil"] = true
+        elseif reg == "rbp" then skip_subregs["ebp"] = true; skip_subregs["bp"] = true; skip_subregs["bpl"] = true
+        elseif reg == "rsp" then skip_subregs["esp"] = true; skip_subregs["sp"] = true; skip_subregs["spl"] = true
+        elseif reg:match("^r(%d+)$") then local num = reg:match("^r(%d+)$"); skip_subregs["r" .. num .. "d"] = true; skip_subregs["r" .. num .. "w"] = true; skip_subregs["r" .. num .. "b"] = true end
+      end
+      for _, state in ipairs(reg_states) do if not skip_subregs[state.reg] then table.insert(filtered_states, state) end end
+
+      if #filtered_states > 0 then
+        local reg_order = {rax=1, rbx=2, rcx=3, rdx=4, rsi=5, rdi=6, r8=7, r9=8, r10=9, r11=10, r12=11, r13=12, r14=13, r15=14}
+        table.sort(filtered_states, function(a, b)
+          local order_a = reg_order[a.reg] or 99
+          local order_b = reg_order[b.reg] or 99
+          if order_a == order_b then return a.reg < b.reg end
+          return order_a < order_b
+        end)
+
+        table.insert(lines, string.rep("─", w))
+        local header_regs = string.format(" Registers @ Line %d ", cursor_line)
+        table.insert(lines, header_regs)
+        table.insert(highlights, {line = #lines, col = 0, hl = "Title"})
+        table.insert(lines, string.rep("─", w))
+
+        for _, state in ipairs(filtered_states) do
+          local reg_line
+          if state.current and state.final and state.changed then
+            reg_line = string.format(" %s = %s → %s", state.reg, state.current.display, state.final.display)
+          elseif state.current and state.final then
+            reg_line = string.format(" %s = %s", state.reg, state.current.display)
+          elseif not state.current and state.final then
+            reg_line = string.format(" %s = (not set) → %s", state.reg, state.final.display)
+          elseif state.current and not state.final then
+            reg_line = string.format(" %s = %s → (cleared)", state.reg, state.current.display)
+          else
+            reg_line = string.format(" %s = ?", state.reg)
+          end
+          if #reg_line > w then reg_line = reg_line:sub(1, w - 3) .. "..." end
+          table.insert(lines, reg_line)
+          local hl = state.changed and "WarningMsg" or "Number"
+          table.insert(highlights, {line = #lines, col = 0, hl = hl})
+          if state.current then jump_map[#lines] = state.current.line elseif state.final then jump_map[#lines] = state.final.line end
+        end
+      end
+    end
+
     table.insert(lines, string.rep("─", w))
     table.insert(lines, string.rep(" ", pad) .. header)
     table.insert(highlights, {line = #lines, col = 0, hl = "Function"})
+
+
     
     -- Error Summary with Details
     if #func.errors > 0 then
@@ -622,184 +716,7 @@ local function generate_lines(functions, width, active_offsets, cursor_line)
       end
     end
     
-    -- Enhanced Cursor-Aware Register Tracking Panel
-    if vim.tbl_count(func.register_usage) > 0 and cursor_line then
-      -- Collect registers at cursor line (current state)
-      local current_regs = {}
-      for reg, usage in pairs(func.register_usage) do
-        -- Find the most recent operation at or before cursor_line
-        local current_op = nil
-        for _, op in ipairs(usage.operations) do
-          if op.line <= cursor_line then
-            if not current_op or op.line > current_op.line then
-              current_op = op
-            end
-          end
-        end
-        if current_op then
-          current_regs[reg] = current_op
-        end
-      end
-      
-      -- Collect all registers (final state)
-      local final_regs = {}
-      for reg, usage in pairs(func.register_usage) do
-        if usage.latest then
-          final_regs[reg] = usage.latest
-        end
-      end
-      
-      -- Build list of registers to display with their states
-      local reg_states = {}
-      local all_regs = {}
-      
-      -- Collect all unique register names
-      for reg, _ in pairs(current_regs) do
-        all_regs[reg] = true
-      end
-      for reg, _ in pairs(final_regs) do
-        all_regs[reg] = true
-      end
-      
-      -- Build state information for each register
-      for reg, _ in pairs(all_regs) do
-        local current_info = current_regs[reg]
-        local final_info = final_regs[reg]
-        
-        local state = {
-          reg = reg,
-          current = current_info,
-          final = final_info,
-          changed = false
-        }
-        
-        -- Detect if register will change after cursor
-        if current_info and final_info then
-          -- Both exist - check if they're different
-          if current_info.line ~= final_info.line or current_info.display ~= final_info.display then
-            state.changed = true
-          end
-        elseif not current_info and final_info then
-          -- Only final exists - will be set later
-          state.changed = true
-        elseif current_info and not final_info then
-          -- Only current exists - will be cleared (shouldn't happen normally)
-          state.changed = true
-        end
-        
-        table.insert(reg_states, state)
-      end
-      
-      -- Filter: prefer full registers over sub-registers
-      local filtered_states = {}
-      local skip_subregs = {}
-      
-      -- First pass: identify full registers that are present
-      for _, state in ipairs(reg_states) do
-        local reg = state.reg
-        if reg == "rax" then
-          skip_subregs["eax"] = true
-          skip_subregs["ax"] = true
-          skip_subregs["al"] = true
-        elseif reg == "rbx" then
-          skip_subregs["ebx"] = true
-          skip_subregs["bx"] = true
-          skip_subregs["bl"] = true
-        elseif reg == "rcx" then
-          skip_subregs["ecx"] = true
-          skip_subregs["cx"] = true
-          skip_subregs["cl"] = true
-        elseif reg == "rdx" then
-          skip_subregs["edx"] = true
-          skip_subregs["dx"] = true
-          skip_subregs["dl"] = true
-        elseif reg == "rsi" then
-          skip_subregs["esi"] = true
-          skip_subregs["si"] = true
-          skip_subregs["sil"] = true
-        elseif reg == "rdi" then
-          skip_subregs["edi"] = true
-          skip_subregs["di"] = true
-          skip_subregs["dil"] = true
-        elseif reg == "rbp" then
-          skip_subregs["ebp"] = true
-          skip_subregs["bp"] = true
-          skip_subregs["bpl"] = true
-        elseif reg == "rsp" then
-          skip_subregs["esp"] = true
-          skip_subregs["sp"] = true
-          skip_subregs["spl"] = true
-        elseif reg:match("^r(%d+)$") then
-          local num = reg:match("^r(%d+)$")
-          skip_subregs["r" .. num .. "d"] = true
-          skip_subregs["r" .. num .. "w"] = true
-          skip_subregs["r" .. num .. "b"] = true
-        end
-      end
-      
-      -- Filter out skipped sub-registers
-      for _, state in ipairs(reg_states) do
-        if not skip_subregs[state.reg] then
-          table.insert(filtered_states, state)
-        end
-      end
-      
-      if #filtered_states > 0 then
-        -- Sort registers for consistent display
-        local reg_order = {rax=1, rbx=2, rcx=3, rdx=4, rsi=5, rdi=6, r8=7, r9=8, r10=9, r11=10, r12=11, r13=12, r14=13, r15=14}
-        table.sort(filtered_states, function(a, b)
-          local order_a = reg_order[a.reg] or 99
-          local order_b = reg_order[b.reg] or 99
-          if order_a == order_b then
-            return a.reg < b.reg
-          end
-          return order_a < order_b
-        end)
-        
-        -- Add header with line number
-        table.insert(lines, string.rep("─", w))
-        local header = string.format(" Registers @ Line %d ", cursor_line)
-        table.insert(lines, header)
-        table.insert(highlights, {line = #lines, col = 0, hl = "Title"})
-        table.insert(lines, string.rep("─", w))
-        
-        for _, state in ipairs(filtered_states) do
-          local reg = state.reg
-          local reg_line
-          
-          if state.current and state.final and state.changed then
-            -- Register has current value and will change
-            reg_line = string.format(" %s = %s → %s", reg, state.current.display, state.final.display)
-          elseif state.current and state.final and not state.changed then
-            -- Register has value and won't change
-            reg_line = string.format(" %s = %s", reg, state.current.display)
-          elseif not state.current and state.final then
-            -- Register will be set later
-            reg_line = string.format(" %s = (not set) → %s", reg, state.final.display)
-          elseif state.current and not state.final then
-            -- Register has value but will be cleared (rare)
-            reg_line = string.format(" %s = %s → (cleared)", reg, state.current.display)
-          else
-            -- Shouldn't happen, but handle gracefully
-            reg_line = string.format(" %s = ?", reg)
-          end
-          
-          if #reg_line > w then reg_line = reg_line:sub(1, w - 3) .. "..." end
-          table.insert(lines, reg_line)
-          
-          -- Use different highlight for changed vs unchanged
-          local hl = state.changed and "WarningMsg" or "Number"
-          table.insert(highlights, {line = #lines, col = 0, hl = hl})
-          
-          -- Map line to source for jump functionality
-          if state.current then
-            jump_map[#lines] = state.current.line
-          elseif state.final then
-            jump_map[#lines] = state.final.line
-          end
-        end
-      end
-    end
+    
     
     -- RBP Marker
     table.insert(lines, string.rep("─", w))
