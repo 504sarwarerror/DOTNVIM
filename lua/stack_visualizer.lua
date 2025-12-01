@@ -127,6 +127,11 @@ local function parse_assembly(lines)
         if not current_func.register_usage[reg] then
           current_func.register_usage[reg] = {operations = {}, latest = nil}
         end
+        
+        -- Store in operations array for history
+        table.insert(current_func.register_usage[reg].operations, info)
+        
+        -- Also keep as latest for final state
         current_func.register_usage[reg].latest = info
         
         -- Propagate to parent (e.g. eax -> rax)
@@ -137,7 +142,7 @@ local function parse_assembly(lines)
           end
           -- Create a copy for the parent
           local parent_info = vim.deepcopy(info)
-          -- parent_info.display = info.display .. " (via " .. reg .. ")" -- Optional: show source
+          table.insert(current_func.register_usage[parent].operations, parent_info)
           current_func.register_usage[parent].latest = parent_info
         end
       end
@@ -166,60 +171,85 @@ local function parse_assembly(lines)
         })
       end
       
-      -- MOV operations
-      local mov_dest, mov_src = trimmed:match("mov%s+(%w+),%s*(.+)")
-      if mov_dest and mov_src then
+      -- MOV operations (more robust): allow size prefixes, ptr keywords and memory/register forms
+      local mov_full_dest, mov_full_src = trimmed:match("^mov%s+([^,]+),%s*(.+)")
+      if mov_full_dest and mov_full_src then
+        local function trim(s) return s and s:match("^%s*(.-)%s*$") or s end
+        local mov_dest = trim(mov_full_dest)
+        local mov_src = trim(mov_full_src)
         local display_value = mov_src
         local value_type = "mov"
-        
-        -- Track if loading from stack
-        local stack_offset = mov_src:match("%[rbp%-(%d+)%]")
-        if stack_offset then
-          display_value = string.format("[rbp-%s]", stack_offset)
+
+        -- Detect stack memory accesses (rbp-relative), allow + or - offsets
+        local stack_src = mov_src:match("%[rbp%-(%d+)%]") or mov_src:match("%[rbp%+%s*(%d+)%]")
+        local stack_dest = mov_dest:match("%[rbp%-(%d+)%]") or mov_dest:match("%[rbp%+%s*(%d+)%]")
+
+        -- Extract pure register names if the operand is a simple register (e.g., 'rax', 'eax', 'r10d')
+        local src_reg = mov_src:match("^(%w+)$")
+        local dest_reg = mov_dest:match("^(%w+)$")
+
+        if stack_src then
+          display_value = string.format("[rbp-%s]", stack_src)
           value_type = "stack_load"
-        -- Check if moving from another register - propagate its value
-        elseif mov_src:match("^[re][abcd]x$") or mov_src:match("^r%d+[dwb]?$") or mov_src:match("^[re][abcd][xhl]$") then
-          -- Check if source register has a tracked value (like a function call result)
-          local src_reg = mov_src
-          -- Check parent of source too (e.g. if moving eax, check if rax has info)
-          local src_parent = reg_parents[src_reg]
-          
-          if current_func.register_usage[src_reg] and current_func.register_usage[src_reg].latest then
-            local src_info = current_func.register_usage[src_reg].latest
-            -- Propagate the source register's value
-            if src_info.type == "call" then
-              display_value = src_info.display
-              value_type = "call"
-            else
-              display_value = mov_src
-              value_type = "reg_move"
-            end
-          elseif src_parent and current_func.register_usage[src_parent] and current_func.register_usage[src_parent].latest then
-             -- If source is eax, and rax has info, maybe use that? 
-             -- Actually, usually we want exact match, but for "mov rax, rbx" if rbx is unknown but ebx is known...
-             -- Let's stick to direct match for now to avoid confusion.
-             display_value = mov_src
-             value_type = "reg_move"
+        elseif src_reg then
+          -- Prefer exact register info; if not available, try parent register
+          local src_info = current_func.register_usage[src_reg] and current_func.register_usage[src_reg].latest
+          if not src_info then
+            local parent = reg_parents[src_reg]
+            if parent then src_info = current_func.register_usage[parent] and current_func.register_usage[parent].latest end
+          end
+
+          if src_info and src_info.type == "call" then
+            display_value = src_info.display
+            value_type = "call"
           else
-            display_value = mov_src
+            -- If source is a register but not from a call, mark as reg_move
             value_type = "reg_move"
           end
-        -- Check for immediate values
         elseif mov_src:match("^%d+$") or mov_src:match("^0x[%x]+$") then
-          display_value = mov_src
           value_type = "immediate"
-        -- Memory or other
         else
-          display_value = mov_src
           value_type = "mov"
         end
-        
-        update_reg(mov_dest, {
-          type = value_type,
-          line = i,
-          value = mov_src,
-          display = display_value
-        })
+
+        -- Update destination register if it's a register
+        if dest_reg then
+          update_reg(dest_reg, {
+            type = value_type,
+            line = i,
+            value = mov_src,
+            display = display_value
+          })
+        end
+
+        -- If moving RAX (or its subregister) into stack slot, propagate call info to that variable
+        if stack_dest then
+          local off_num = tonumber(stack_dest)
+          -- Ensure variable entry exists
+          if not current_func.variables[off_num] then
+            current_func.variables[off_num] = {
+              offset = off_num,
+              type = "unknown",
+              usage = {},
+              def_line = i,
+              reads = {},
+              writes = {},
+              access_count = 0,
+            }
+          end
+          local var = current_func.variables[off_num]
+          table.insert(var.writes, i)
+          var.access_count = var.access_count + 1
+
+          -- If source register carries a call result, record the usage
+          local src_is_rax = (src_reg == "rax") or (reg_parents[src_reg] == "rax")
+          if src_is_rax then
+            local rax_info = current_func.register_usage["rax"] and current_func.register_usage["rax"].latest
+            if rax_info and rax_info.type == "call" then
+              table.insert(var.usage, rax_info.display)
+            end
+          end
+        end
       end
       
       -- LEA operations (register pointing to stack)
@@ -597,8 +627,17 @@ local function generate_lines(functions, width, active_offsets, cursor_line)
       -- Collect registers at cursor line (current state)
       local current_regs = {}
       for reg, usage in pairs(func.register_usage) do
-        if usage.latest and usage.latest.line <= cursor_line then
-          current_regs[reg] = usage.latest
+        -- Find the most recent operation at or before cursor_line
+        local current_op = nil
+        for _, op in ipairs(usage.operations) do
+          if op.line <= cursor_line then
+            if not current_op or op.line > current_op.line then
+              current_op = op
+            end
+          end
+        end
+        if current_op then
+          current_regs[reg] = current_op
         end
       end
       
@@ -912,11 +951,17 @@ function M.refresh()
           for _, active_off in ipairs(active_offsets) do
             local pattern = "%[rbp%-" .. active_off .. "%]"
             if line_content:match(pattern) then
-              -- Found the active variable line, center it in the visualizer window
+              -- Found the active variable line
               local current_win = vim.api.nvim_get_current_win()
               vim.api.nvim_set_current_win(stack_win)
-              vim.api.nvim_win_set_cursor(stack_win, {line_num, 0})
-              vim.cmd('normal! zz') -- Center the line in the window
+              
+              -- Only center if the cursor position changed
+              local current_cursor = vim.api.nvim_win_get_cursor(stack_win)[1]
+              if current_cursor ~= line_num then
+                vim.api.nvim_win_set_cursor(stack_win, {line_num, 0})
+                vim.cmd('normal! zz') -- Center the line in the window
+              end
+              
               vim.api.nvim_set_current_win(current_win) -- Return to original window
               return
             end
