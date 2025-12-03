@@ -562,7 +562,3 @@ MIT License - see [LICENSE](LICENSE) file for details.
 ## Credits
 
 Developed for advanced assembly development workflows in Neovim.
-
----
-
-**Note**: These plugins are designed for x86-64 assembly with standard calling conventions. Support for other architectures and syntaxes (AT&T, ARM, etc.) may be added in the future.
