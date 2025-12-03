@@ -1,4 +1,4 @@
-# DOTNVIM - Assembly Stack Visualizer for Neovim
+# StackVisualization - Assembly Stack Visualizer for Neovim
 
 A powerful Neovim plugin that provides real-time, dynamic visualization of assembly stack layouts with advanced error detection and analysis capabilities.
 
@@ -37,9 +37,9 @@ A powerful Neovim plugin that provides real-time, dynamic visualization of assem
 
 ```lua
 {
-  '504sarwarerror/DOTNVIM',
+  '504sarwarerror/StackVisualization',
   config = function()
-    require('dotnvim').setup({
+    require('stack_visualization').setup({
       -- Auto-start visualizer for assembly files
       auto_start = true,
       
@@ -61,9 +61,9 @@ A powerful Neovim plugin that provides real-time, dynamic visualization of assem
 
 ```lua
 use {
-  '504sarwarerror/DOTNVIM',
+  '504sarwarerror/StackVisualization',
   config = function()
-    require('dotnvim').setup({
+    require('stack_visualization').setup({
       auto_start = true,
       keybindings = {
         toggle = '<leader>sv',
@@ -77,14 +77,14 @@ use {
 ### Using [vim-plug](https://github.com/junegunn/vim-plug)
 
 ```vim
-Plug '504sarwarerror/DOTNVIM'
+Plug '504sarwarerror/StackVisualization'
 ```
 
 Then in your `init.lua` or `init.vim`:
 
 ```lua
 lua << EOF
-require('dotnvim').setup({
+require('stack_visualization').setup({
   auto_start = true,
   keybindings = {
     toggle = '<leader>sv',
@@ -97,16 +97,16 @@ EOF
 
 ```bash
 # Clone the repository
-git clone https://github.com/504sarwarerror/DOTNVIM.git ~/.local/share/nvim/site/pack/plugins/start/DOTNVIM
+git clone https://github.com/504sarwarerror/StackVisualization.git ~/.local/share/nvim/site/pack/plugins/start/StackVisualization
 
 # Or for lazy loading
-git clone https://github.com/504sarwarerror/DOTNVIM.git ~/.local/share/nvim/site/pack/plugins/opt/DOTNVIM
+git clone https://github.com/504sarwarerror/StackVisualization.git ~/.local/share/nvim/site/pack/plugins/opt/StackVisualization
 ```
 
 Then add to your config:
 
 ```lua
-require('dotnvim').setup()
+require('stack_visualization').setup()
 ```
 
 ## ⚙️ Configuration
@@ -114,7 +114,7 @@ require('dotnvim').setup()
 ### Default Configuration
 
 ```lua
-require('dotnvim').setup({
+require('stack_visualization').setup({
   -- Auto-start visualizer for assembly files
   auto_start = false,
   
@@ -132,13 +132,13 @@ require('dotnvim').setup({
 
 ```lua
 -- Just use defaults
-require('dotnvim').setup()
+require('stack_visualization').setup()
 ```
 
 ### Custom Keybindings
 
 ```lua
-require('dotnvim').setup({
+require('stack_visualization').setup({
   keybindings = {
     toggle = '<leader>as',  -- Custom toggle key
   },
@@ -301,22 +301,22 @@ This serves as a reference for setting up a full assembly development environmen
 
 ```lua
 -- Show/open the visualizer
-require('dotnvim').show()
+require('stack_visualization').show()
 
 -- Manually refresh the display
-require('dotnvim').refresh()
+require('stack_visualization').refresh()
 
 -- Jump to source definition
-require('dotnvim').jump()
+require('stack_visualization').jump()
 
 -- Show error tooltip
-require('dotnvim').show_tooltip()
+require('stack_visualization').show_tooltip()
 
 -- Start auto-reload timer
-require('dotnvim').start_auto_reload()
+require('stack_visualization').start_auto_reload()
 
 -- Stop auto-reload timer
-require('dotnvim').stop_auto_reload()
+require('stack_visualization').stop_auto_reload()
 ```
 
 ## 🐛 Troubleshooting

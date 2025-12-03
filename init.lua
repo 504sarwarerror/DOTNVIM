@@ -2,7 +2,7 @@
 -- EXAMPLE NEOVIM CONFIGURATION
 -- ============================================================================
 -- This is a complete example Neovim configuration showing how to set up
--- a full assembly development environment with the DOTNVIM plugin.
+-- a full assembly development environment with the Stack Visualization plugin.
 --
 -- To use this configuration:
 -- 1. Copy this file to ~/.config/nvim/init.lua
@@ -925,19 +925,22 @@ vim.keymap.set('i', '<C-S-z>', '<C-o><C-r>', { noremap = true, silent = true, de
 
 
 -- ============================================================================
--- DOTNVIM PLUGIN SETUP (Stack Visualizer)
+-- STACK VISUALIZATION PLUGIN SETUP
 -- ============================================================================
--- This shows how to configure the DOTNVIM plugin in your config
+-- This shows how to configure the Stack Visualization plugin in your config
 -- If you installed via a plugin manager, this is all you need!
 
 -- Option 1: Minimal setup (use defaults)
--- require('dotnvim').setup()
+-- require('stack_visualization').setup()
 
 -- Option 2: Custom setup with auto-start
-require('dotnvim').setup({
+require('stack_visualization').setup({
   auto_start = true,  -- Auto-open for assembly files
   keybindings = {
     toggle = '<leader>sv',
   },
   filetypes = { 'asm', 'nasm' },
 })
+
+-- Note: The :StackViz command is automatically available after plugin loads
+-- ============================================================================
