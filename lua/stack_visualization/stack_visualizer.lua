@@ -172,7 +172,11 @@ local function parse_assembly(lines)
       end
       
       -- MOV operations (more robust): allow size prefixes, ptr keywords and memory/register forms
-      local mov_full_dest, mov_full_src = trimmed:match("^mov%s+([^,]+),%s*(.+)")
+      -- Case insensitive matching
+      local mov_full_dest, mov_full_src = trimmed:lower():match("^mov[bwlq]?%s+([^,]+),%s*(.+)")
+      if not mov_full_dest then
+        mov_full_dest, mov_full_src = trimmed:lower():match("^mov%s+([^,]+),%s*(.+)")
+      end
       if mov_full_dest and mov_full_src then
         local function trim(s) return s and s:match("^%s*(.-)%s*$") or s end
         local mov_dest = trim(mov_full_dest)
@@ -252,8 +256,8 @@ local function parse_assembly(lines)
         end
       end
       
-      -- LEA operations (register pointing to stack)
-      local lea_reg, lea_offset = trimmed:match("lea%s+(%w+),%s*%[rbp%-(%d+)%]")
+      -- LEA operations (register pointing to stack) - case insensitive
+      local lea_reg, lea_offset = trimmed:lower():match("lea%s+(%w+),%s*%[rbp%-(%d+)%]")
       if lea_reg and lea_offset then
         current_func.register_map[lea_reg] = tonumber(lea_offset)
         update_reg(lea_reg, {
@@ -262,10 +266,43 @@ local function parse_assembly(lines)
           value = string.format("[rbp-%s]", lea_offset),
           display = string.format("&[rbp-%s]", lea_offset)
         })
+      else
+        -- Also try LEA with rip-relative or other addressing modes
+        local lea_reg2, lea_src = trimmed:lower():match("lea%s+(%w+),%s*(.+)")
+        if lea_reg2 and lea_src then
+          update_reg(lea_reg2, {
+            type = "lea",
+            line = i,
+            value = lea_src,
+            display = "&" .. lea_src
+          })
+        end
       end
       
-      -- ADD/SUB operations
-      local add_dest, add_src = trimmed:match("add%s+(%w+),%s*(.+)")
+      -- XOR operations (commonly used to zero registers)
+      local xor_dest, xor_src = trimmed:lower():match("xor%s+(%w+),%s*(%w+)")
+      if xor_dest and xor_src then
+        if xor_dest == xor_src or reg_parents[xor_dest] == reg_parents[xor_src] then
+          -- Self-XOR means zero
+          update_reg(xor_dest, {
+            type = "xor",
+            line = i,
+            value = "0",
+            display = "0"
+          })
+        else
+          update_reg(xor_dest, {
+            type = "xor",
+            line = i,
+            value = xor_src,
+            display = "^" .. xor_src
+          })
+        end
+      end
+      
+      -- ADD/SUB operations - case insensitive
+      local line_lower = trimmed:lower()
+      local add_dest, add_src = line_lower:match("add%s+(%w+),%s*(.+)")
       if add_dest and add_src then
         update_reg(add_dest, {
           type = "add",
@@ -275,13 +312,87 @@ local function parse_assembly(lines)
         })
       end
       
-      local sub_dest, sub_src = trimmed:match("sub%s+(%w+),%s*(.+)")
+      local sub_dest, sub_src = line_lower:match("sub%s+(%w+),%s*(.+)")
       if sub_dest and sub_src and sub_dest ~= "rsp" then -- Ignore stack allocation
         update_reg(sub_dest, {
           type = "sub",
           line = i,
           value = sub_src,
           display = string.format("-%s", sub_src)
+        })
+      end
+      
+      -- INC/DEC operations
+      local inc_reg = line_lower:match("inc%s+(%w+)")
+      if inc_reg then
+        update_reg(inc_reg, {
+          type = "inc",
+          line = i,
+          value = "+1",
+          display = "+1"
+        })
+      end
+      
+      local dec_reg = line_lower:match("dec%s+(%w+)")
+      if dec_reg then
+        update_reg(dec_reg, {
+          type = "dec",
+          line = i,
+          value = "-1",
+          display = "-1"
+        })
+      end
+      
+      -- AND/OR operations
+      local and_dest, and_src = line_lower:match("and%s+(%w+),%s*(.+)")
+      if and_dest and and_src then
+        update_reg(and_dest, {
+          type = "and",
+          line = i,
+          value = and_src,
+          display = "&" .. and_src
+        })
+      end
+      
+      local or_dest, or_src = line_lower:match("or%s+(%w+),%s*(.+)")
+      if or_dest and or_src then
+        update_reg(or_dest, {
+          type = "or",
+          line = i,
+          value = or_src,
+          display = "|" .. or_src
+        })
+      end
+      
+      -- SHL/SHR/SAR operations
+      local shl_dest, shl_src = line_lower:match("shl%s+(%w+),%s*(.+)")
+      if shl_dest and shl_src then
+        update_reg(shl_dest, {
+          type = "shl",
+          line = i,
+          value = shl_src,
+          display = "<<" .. shl_src
+        })
+      end
+      
+      local shr_dest, shr_src = line_lower:match("shr%s+(%w+),%s*(.+)")
+      if shr_dest and shr_src then
+        update_reg(shr_dest, {
+          type = "shr",
+          line = i,
+          value = shr_src,
+          display = ">>" .. shr_src
+        })
+      end
+      
+      -- IMUL/MUL operations
+      local imul_dest = line_lower:match("imul%s+(%w+)")
+      if imul_dest then
+        update_reg(imul_dest, {
+          type = "imul",
+          line = i,
+          value = "mul",
+          display = "*"
         })
       end
       
@@ -965,6 +1076,7 @@ function M.show()
     vim.api.nvim_win_set_option(stack_win, 'number', false)
     vim.api.nvim_win_set_option(stack_win, 'relativenumber', false)
     vim.api.nvim_win_set_option(stack_win, 'wrap', false)
+    vim.api.nvim_win_set_option(stack_win, 'statuscolumn', '')  -- Clear statuscolumn to prevent objdump addresses
     vim.api.nvim_win_set_width(stack_win, 50)
     
     -- Set faster updatetime for quicker tooltips
